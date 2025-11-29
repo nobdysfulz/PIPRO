@@ -1,49 +1,16 @@
 import { supabase } from "./supabase-client.js";
-import { createClient } from "@supabase/supabase-js";
 
-// Handle both Vite (import.meta.env) and Node.js (process.env) environments
-const getEnvVar = (key, defaultValue) => {
-  if (typeof import.meta !== "undefined" && import.meta.env) {
-    return import.meta.env[key] || defaultValue;
-  }
-  return process.env[key] || defaultValue;
-};
-
-// Create service role client for admin operations (bypasses RLS)
-const supabaseUrl = getEnvVar("VITE_SUPABASE_URL", "http://127.0.0.1:54321");
-const supabaseServiceKey = getEnvVar(
-  "VITE_SUPABASE_SERVICE_ROLE_KEY",
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU"
-);
-const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-  },
-  db: {
-    schema: "public",
-  },
-});
-
-// Test service role access on initialization (silent)
-supabaseAdmin
-  .from("users")
-  .select("id")
-  .limit(1)
-  .then(({ error }) => {
-    if (error) {
-      console.error("Service role client initialization failed:", error);
-    }
-  });
+// SECURITY NOTE: This SDK now uses only the anon key with RLS policies
+// All database operations respect Row Level Security policies
+// For admin operations, implement Supabase Edge Functions with proper authentication
 
 /**
  * Base Entity class that provides CRUD operations compatible with Base44 SDK
  */
 export class CustomEntity {
-  constructor(tableName, useServiceRole = false) {
+  constructor(tableName) {
     this.tableName = tableName;
-    this.supabase = useServiceRole ? supabaseAdmin : supabase;
-    this.useServiceRole = useServiceRole;
+    this.supabase = supabase; // Always use RLS-protected client
   }
 
   /**
@@ -337,11 +304,11 @@ export class CustomEntity {
  */
 export class UserEntity extends CustomEntity {
   constructor() {
-    super("users", true); // Use service role for user operations to bypass RLS when needed
+    super("users"); // Uses RLS-protected client - ensure proper RLS policies are in place
   }
 
   /**
-   * Get a user by ID using service role (bypasses RLS)
+   * Get a user by ID (requires appropriate RLS permissions)
    * @param {string} id - User ID
    * @returns {Promise<Object>} User data
    */
@@ -366,7 +333,7 @@ export class UserEntity extends CustomEntity {
    */
   async me() {
     try {
-      // Use the regular supabase client for auth, but admin client for database operations
+      // Get the authenticated user from Supabase Auth
       const {
         data: { user },
         error: authError,
@@ -392,7 +359,7 @@ export class UserEntity extends CustomEntity {
 
       if (!user) throw new Error("Not authenticated");
 
-      // Use admin client (this.supabase) for database operations to bypass RLS
+      // Fetch user data from database (protected by RLS)
       const { data, error } = await this.supabase
         .from("users")
         .select("*")
@@ -471,7 +438,7 @@ export class UserEntity extends CustomEntity {
    * @returns {Promise<Object>} Updated user data
    */
   async updateMyUserData(userData) {
-    // Use regular supabase client for auth, but admin client for database operations
+    // Get authenticated user
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -647,7 +614,7 @@ export class UserEntity extends CustomEntity {
   }
 
   /**
-   * List all users (admin function using service role)
+   * List all users (requires appropriate RLS permissions)
    * @param {string} orderBy - Field to order by
    * @param {number} limit - Maximum number of records
    * @returns {Promise<Array>} Array of users
@@ -657,7 +624,7 @@ export class UserEntity extends CustomEntity {
   }
 
   /**
-   * Filter users (admin function using service role)
+   * Filter users (requires appropriate RLS permissions)
    * @param {Object} conditions - Filter conditions
    * @param {string} orderBy - Field to order by
    * @param {number} limit - Maximum number of records
@@ -681,30 +648,8 @@ function entityNameToTableName(entityName) {
 }
 
 /**
- * Determine if an entity should use service role based on common patterns
- * @param {string} entityName - Entity name
- * @returns {boolean} Whether to use service role
- */
-function shouldUseServiceRole(entityName) {
-  const serviceRoleEntities = [
-    "user",
-    "transaction",
-    "usermembership",
-    "payment",
-    "order",
-    "subscription",
-    "admin",
-    "audit",
-    "log",
-  ];
-
-  return serviceRoleEntities.some((pattern) =>
-    entityName.toLowerCase().includes(pattern)
-  );
-}
-
-/**
  * Create a dynamic entities proxy that creates entities on-demand
+ * All entities use RLS-protected client for security
  */
 function createEntitiesProxy() {
   const entityCache = new Map();
@@ -720,16 +665,15 @@ function createEntitiesProxy() {
           return entityCache.get(entityName);
         }
 
-        // Create new entity on-demand
+        // Create new entity on-demand (always uses RLS)
         const tableName = entityNameToTableName(entityName);
-        const useServiceRole = shouldUseServiceRole(entityName);
-        const entity = new CustomEntity(tableName, useServiceRole);
+        const entity = new CustomEntity(tableName);
 
         // Cache the entity for future use
         entityCache.set(entityName, entity);
 
         console.log(
-          `Created entity: ${entityName} -> ${tableName} (service role: ${useServiceRole})`
+          `Created entity: ${entityName} -> ${tableName}`
         );
 
         return entity;
